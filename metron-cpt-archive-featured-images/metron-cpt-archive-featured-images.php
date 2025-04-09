@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Metron.Church ▸ CPT Archive Featured Images
  * Description: Adds a featured image field to CPT archive admin pages, with a settings panel to choose which post types to apply it to.
- * Version: 1.2
+ * Version: 1.2.1
  * Author: metron.church
  */
 
@@ -81,7 +81,7 @@ function mc_render_archive_image_settings_page() {
 
 
 ///////////////////////////////////////////////////////////
-// 🧱 Inject the uploader UI into selected CPT list pages
+// Inject the uploader UI into selected CPT list pages
 ///////////////////////////////////////////////////////////
 
 add_action('restrict_manage_posts', function () {
@@ -190,74 +190,116 @@ add_shortcode('archive_hero_image', function () {
 // 🧱 Bricks Dynamic Tag: {archive_image}
 ///////////////////////////////////////////////////////////
 
-add_filter('bricks/dynamic_tags_list', function ($tags) {
-  $tags[] = [
-    'name'  => '{archive_image}',
-    'label' => 'Archive Image',
-    'group' => 'Metron',
-  ];
-  return $tags;
-});
+/**
+ * Register the tag in Bricks.
+ */
+add_filter('bricks/dynamic_tags_list', 'mc_add_archive_image_tag');
+function mc_add_archive_image_tag($tags) {
+    $tags[] = [
+        'name'  => '{archive_image}',
+        'label' => 'Archive Image',
+        'group' => 'Metron',
+    ];
+    return $tags;
+}
 
 /**
- * Handle {archive_image} as a raw dynamic tag value
+ * Render the tag's value in any context (text, image, link, etc.)
  */
 add_filter('bricks/dynamic_data/render_tag', 'mc_render_archive_image_tag', 20, 3);
 function mc_render_archive_image_tag($tag, $post = null, $context = 'text') {
-  if ($tag !== '{archive_image}') {
-    return $tag;
-  }
+    // TEMPORARY DEBUG: Log the received tag and context
+    error_log("mc_render_archive_image_tag received: tag='{$tag}', context='{$context}'");
 
-  return mc_get_archive_image_url();
-}
-
-/**
- * Handle {archive_image} when embedded in content or attribute strings
- */
-add_filter('bricks/dynamic_data/render_content', 'mc_render_archive_image_in_content', 20, 3);
-add_filter('bricks/frontend/render_data', 'mc_render_archive_image_in_content', 20, 2);
-
-function mc_render_archive_image_in_content($content, $post = null, $context = 'text') {
-  if (strpos($content, '{archive_image}') === false) {
-    return $content;
-  }
-
-  $url = mc_get_archive_image_url();
-  return str_replace('{archive_image}', $url, $content);
-}
-
-/**
- * Logic to get the archive image URL based on post type
- */
-function mc_get_archive_image_url() {
-  $post_type = null;
-
-  // Archive page context
-  if (is_post_type_archive()) {
-    $post_type = get_query_var('post_type');
-  }
-
-  // Fallback: queried object
-  if (!$post_type) {
-    $object = get_queried_object();
-    if ($object instanceof WP_Post_Type) {
-      $post_type = $object->name;
-    } elseif (isset($object->post_type)) {
-      $post_type = $object->post_type;
+    if ($tag !== '{archive_image}') {
+        // TEMPORARY DEBUG: Log if the tag didn't match
+        error_log("mc_render_archive_image_tag: Tag did NOT match '{archive_image}'. Returning original tag.");
+        return $tag;
     }
-  }
 
-  // Final fallback from $post global
-  global $post;
-  if (!$post_type && $post instanceof WP_Post) {
-    $post_type = $post->post_type;
-  }
+    // TEMPORARY DEBUG: Log if the tag matched
+    error_log("mc_render_archive_image_tag: Tag matched! Processing...");
 
-  if (!$post_type) return '';
+    [$id, $url] = mc_get_archive_image_id_and_url();
 
-  $image_id = get_option("{$post_type}_archive_featured_image");
-  return $image_id ? wp_get_attachment_image_url($image_id, 'full') : '';
+    if ($context === 'image') {
+        return $id ? [
+            'id'  => $id,
+            'url' => $url,
+            'alt' => get_post_meta($id, '_wp_attachment_image_alt', true),
+        ] : [];
+    }
+
+    return $url;
 }
+
+/**
+ * Replace {archive_image} inside strings (like attributes or HTML content).
+ */
+add_filter('bricks/dynamic_data/render_content', 'mc_render_archive_image_tag_in_content', 20, 3);
+add_filter('bricks/frontend/render_data', 'mc_render_archive_image_tag_in_content', 20, 2);
+function mc_render_archive_image_tag_in_content($content, $post = null, $context = 'text') {
+    if (strpos($content, '{archive_image}') === false) {
+        return $content;
+    }
+
+    [, $url] = mc_get_archive_image_id_and_url();
+    return str_replace('{archive_image}', $url, $content);
+}
+
+/**
+ * Helper function to get image ID and URL for the current archive.
+ */
+function mc_get_archive_image_id_and_url() {
+    $post_type = null;
+
+    if (is_post_type_archive()) {
+        $post_type = get_query_var('post_type');
+    }
+
+    if (!$post_type && ($obj = get_queried_object())) {
+        if ($obj instanceof WP_Post_Type) {
+            $post_type = $obj->name;
+        } elseif (isset($obj->post_type)) {
+            $post_type = $obj->post_type;
+        }
+    }
+
+    global $post;
+    if (!$post_type && $post instanceof WP_Post) {
+        $post_type = $post->post_type;
+    }
+
+    if (!$post_type) {
+        return [0, ''];
+    }
+
+    $id  = (int) get_option("{$post_type}_archive_featured_image", 0);
+    $url = $id ? wp_get_attachment_image_url($id, 'full') : '';
+
+    return [$id, $url];
+}
+
+// Footer logging
+add_action('wp_footer', function () {
+    if (!is_admin() && current_user_can('manage_options')) {
+        // Get the rendered dynamic tag value using the Bricks dynamic data filter.
+        $rendered_value = apply_filters('bricks/dynamic_data/render_tag', '{archive_image}', null, 'text');
+        
+        // Call the helper function to get the image ID and URL directly.
+        list($helper_id, $helper_url) = mc_get_archive_image_id_and_url();
+        
+        // Output the dynamic tag result in a fixed footer block.
+        echo '<div style="position:fixed;bottom:0;left:0;background:#222;color:#0f0;padding:6px 12px;z-index:9999;font-size:12px;">';
+        echo '<strong>Dynamic Tag Output:</strong> ' . esc_html(print_r($rendered_value, true));
+        echo '</div>';
+        
+        // Output the helper function result in a separate fixed footer block.
+        echo '<div style="position:fixed;bottom:50px;left:0;background:#222;color:#0f0;padding:6px 12px;z-index:9999;font-size:12px;">';
+        echo '<strong>Helper Function Output:</strong> ID = ' . intval($helper_id) . ', URL = ' . esc_url($helper_url);
+        echo '</div>';
+    }
+});
 
 
 ///////////////////////////////////////////////////////////
